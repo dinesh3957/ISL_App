@@ -80,38 +80,8 @@ def get_model():
 
     token = HF_TOKEN
 
-    # Try CTranslate2 first
+    # 1. Try IndicTrans2
     if token and token.startswith("hf_"):
-        try:
-            import ctranslate2
-            from huggingface_hub import login, snapshot_download
-            from transformers import AutoTokenizer
-            from IndicTransToolkit import IndicProcessor
-
-            login(token=token, add_to_git_credential=False)
-
-            if not CT2_DIR.exists() or not (CT2_DIR / "model.bin").exists():
-                model_path = snapshot_download(
-                    repo_id=INDIC_MODEL, token=token,
-                    ignore_patterns=["*.msgpack", "flax_model*", "tf_model*"],
-                )
-                converter = ctranslate2.converters.OpusMTConverter(model_path)
-                converter.convert(str(CT2_DIR), quantization="int8", force=True)
-
-            translator = ctranslate2.Translator(
-                str(CT2_DIR),
-                device=DEVICE,
-                inter_threads=2,
-                intra_threads=os.cpu_count() or 4,
-            )
-            tokenizer = AutoTokenizer.from_pretrained(INDIC_MODEL, trust_remote_code=True, token=token)
-            ip = IndicProcessor(inference=True)
-            _model_cache.update({"engine": translator, "tokenizer": tokenizer, "ip": ip, "type": "ct2", "label": "⚡ CTranslate2 INT8"})
-            return translator, tokenizer, ip, "ct2", "⚡ CTranslate2 INT8"
-        except Exception:
-            pass
-
-        # Try PyTorch IndicTrans2
         try:
             from huggingface_hub import login
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -121,21 +91,22 @@ def get_model():
             tokenizer = AutoTokenizer.from_pretrained(INDIC_MODEL, trust_remote_code=True, token=token)
             model = AutoModelForSeq2SeqLM.from_pretrained(
                 INDIC_MODEL, trust_remote_code=True, token=token, torch_dtype=torch.float32
-            ).to(DEVICE)
+            )
             model.eval()
             ip = IndicProcessor(inference=True)
-            _model_cache.update({"engine": model, "tokenizer": tokenizer, "ip": ip, "type": "pytorch_indic", "label": "🔵 IndicTrans2"})
-            return model, tokenizer, ip, "pytorch_indic", "🔵 IndicTrans2"
-        except Exception:
-            pass
+            _model_cache.update({"engine": model, "tokenizer": tokenizer, "ip": ip, "type": "pytorch_indic", "label": "AI4Bharat IndicTrans2"})
+            return model, tokenizer, ip, "pytorch_indic", "AI4Bharat IndicTrans2"
+        except Exception as e:
+            print(f"Warning loading IndicTrans2: {e}")
 
-    # Fallback: mBART
+    # 2. Fallback: mBART
     from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
     tokenizer = MBart50TokenizerFast.from_pretrained(MBART_MODEL)
-    model = MBartForConditionalGeneration.from_pretrained(MBART_MODEL).to(DEVICE)
+    model = MBartForConditionalGeneration.from_pretrained(MBART_MODEL)
     model.eval()
-    _model_cache.update({"engine": model, "tokenizer": tokenizer, "ip": None, "type": "mbart", "label": "🟡 mBART-50"})
-    return model, tokenizer, None, "mbart", "🟡 mBART-50"
+    _model_cache.update({"engine": model, "tokenizer": tokenizer, "ip": None, "type": "mbart", "label": "Facebook mBART-50"})
+    return model, tokenizer, None, "mbart", "Facebook mBART-50"
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -209,8 +180,6 @@ def clear_all():
 # ─────────────────────────────────────────────────────────────────────────────
 
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap');
-
 :root {
     --bg: #0f1117;
     --card: #1a1d27;
@@ -226,9 +195,10 @@ CUSTOM_CSS = """
 
 body, .gradio-container {
     background: var(--bg) !important;
-    font-family: 'Inter', sans-serif !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
     color: var(--text) !important;
 }
+
 
 /* Nav */
 .nav-bar {
