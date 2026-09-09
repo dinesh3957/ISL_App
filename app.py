@@ -139,20 +139,146 @@ def get_model():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  NLP & ISL GRAMMAR PIPELINE (Tokenization, POS Tagging, Lemmatization, SOV)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_spacy_nlp = None
+
+def get_spacy_nlp():
+    global _spacy_nlp
+    if _spacy_nlp is None:
+        try:
+            import spacy
+            try:
+                _spacy_nlp = spacy.load("en_core_web_sm")
+            except Exception:
+                import spacy.cli
+                spacy.cli.download("en_core_web_sm")
+                _spacy_nlp = spacy.load("en_core_web_sm")
+        except Exception as e:
+            print(f"spaCy load note: {e}")
+            _spacy_nlp = None
+    return _spacy_nlp
+
+
+POS_MAP = {
+    "NOUN":  ("Noun", "Object / Entity", "KEPT"),
+    "PROPN": ("Proper Noun", "Name / Location", "KEPT"),
+    "PRON":  ("Pronoun", "Subject Reference", "KEPT"),
+    "VERB":  ("Verb", "Action (Lemmatized)", "KEPT"),
+    "ADJ":   ("Adjective", "Descriptor", "KEPT"),
+    "ADV":   ("Adverb", "Modifier", "KEPT"),
+    "NUM":   ("Number", "Quantity", "KEPT"),
+    "AUX":   ("Auxiliary Verb", "Helper (is, was, have)", "FILTERED"),
+    "ADP":   ("Preposition", "Connector (in, on, to)", "FILTERED"),
+    "DET":   ("Determiner", "Article (the, a, an)", "FILTERED"),
+    "PUNCT": ("Punctuation", "Symbols", "FILTERED"),
+    "CCONJ": ("Conjunction", "Connector (and, but)", "FILTERED"),
+    "SCONJ": ("Sub-Conjunction", "Connector (because, if)", "FILTERED"),
+    "PART":  ("Particle", "Grammar marker", "FILTERED"),
+}
+
+TIME_WORDS = {"TODAY", "YESTERDAY", "TOMORROW", "MORNING", "EVENING", "NIGHT", "NOW", "SOON", "LATER", "ALWAYS", "NEVER", "DAILY", "EVERYDAY", "YEAR", "MONTH", "DAY", "WEEK"}
+QUESTION_WORDS = {"WHAT", "WHERE", "WHEN", "WHY", "WHO", "HOW", "WHICH", "WHOSE"}
+NEGATION_WORDS = {"NOT", "NO", "NEVER", "NONE", "NOTHING"}
+
+def process_isl_nlp(english_text: str):
+    """
+    NLP Tokenization, Lemmatization, POS Tagging, and ISL (SOV) Grammar Parser
+    """
+    if not english_text or not english_text.strip():
+        return "", '<div style="color:#8b8fa8;padding:12px;">No text translated yet.</div>', []
+
+    nlp = get_spacy_nlp()
+    if nlp is None:
+        words = re.findall(r'\b\w+\b', english_text)
+        isl_words = [w.upper() for w in words if w.lower() not in {"is", "am", "are", "was", "were", "the", "a", "an", "to", "of", "in"}]
+        badges = "".join([f'<span class="isl-badge">{w}</span>' for w in isl_words])
+        table = [[w, w.lower(), "WORD", "Word", "✅ Included in Sign"] for w in words]
+        return " ".join(isl_words), f'<div class="isl-chain-row">{badges}</div>', table
+
+    doc = nlp(english_text)
+    table_rows = []
+    all_isl_sentences = []
+    all_badges_html = []
+
+    for sent in doc.sents:
+        times, subjects, locations, objects, adjectives, others, verbs, negations, questions = [], [], [], [], [], [], [], [], []
+
+        for token in sent:
+            if token.is_punct or token.is_space:
+                continue
+
+            raw_word = token.text
+            lemma = token.lemma_.upper()
+            pos = token.pos_
+            dep = token.dep_
+
+            pos_info = POS_MAP.get(pos, (pos, "Other", "KEPT"))
+            pos_name, grammar_desc, default_action = pos_info
+
+            is_filtered = (default_action == "FILTERED" or raw_word.lower() in {"is", "am", "are", "was", "were", "been", "being", "the", "a", "an", "to", "of"})
+            action_label = "❌ Filtered (No Sign)" if is_filtered else "✅ Included in Sign"
+
+            table_rows.append([raw_word, lemma, pos, f"{pos_name} [{dep}]", action_label])
+
+            if is_filtered:
+                continue
+
+            # ISL Grammar Classification
+            if lemma in TIME_WORDS or (dep in {"npadvmod", "advmod"} and lemma in TIME_WORDS):
+                times.append(lemma)
+            elif lemma in QUESTION_WORDS:
+                questions.append(lemma)
+            elif lemma in NEGATION_WORDS or dep == "neg":
+                negations.append(lemma)
+            elif dep in {"nsubj", "nsubjpass", "csubj"}:
+                subjects.append(lemma)
+            elif dep in {"prep", "pobj"} and token.ent_type_ in {"GPE", "LOC", "FAC"}:
+                locations.append(lemma)
+            elif dep in {"dobj", "pobj", "attr", "dative", "obj"}:
+                objects.append(lemma)
+            elif pos in {"NOUN", "PROPN"}:
+                if not subjects:
+                    subjects.append(lemma)
+                else:
+                    objects.append(lemma)
+            elif pos == "ADJ" or dep == "amod":
+                adjectives.append(lemma)
+            elif pos == "VERB" or dep == "ROOT":
+                verbs.append(lemma)
+            elif pos == "PRON":
+                subjects.append(lemma)
+            else:
+                others.append(lemma)
+
+        # ISL Syntax Rule: TIME -> SUBJECT -> LOCATION -> OBJECT -> ADJECTIVE -> OTHERS -> VERB -> NEGATION -> QUESTION
+        isl_tokens = times + subjects + locations + objects + adjectives + others + verbs + negations + questions
+
+        if isl_tokens:
+            all_isl_sentences.append(" ".join(isl_tokens))
+            badges = "".join([f'<span class="isl-badge">{t}</span>' for t in isl_tokens])
+            all_badges_html.append(f'<div class="isl-chain-row"><span style="color:#8b8fa8;font-size:0.8rem;margin-right:6px">👉 SIGN:</span>{badges}</div>')
+
+    final_isl_text = "\n".join(all_isl_sentences)
+    final_badges = "".join(all_badges_html)
+    return final_isl_text, final_badges, table_rows
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  TRANSLATE FUNCTION (Runs on ZeroGPU with 15s limit & CPU fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @spaces.GPU(duration=15)
 def translate(marathi_text: str, pdf_file):
-
     # Use PDF text if uploaded
     if pdf_file is not None:
         marathi_text = read_pdf(pdf_file.name)
         if marathi_text.startswith("[PDF Error"):
-            return marathi_text, "❌ PDF read failed", ""
+            return marathi_text, "", "", [], "❌ PDF read failed", ""
 
     if not marathi_text or not marathi_text.strip():
-        return "", "⚠️ Please enter Marathi text or upload a PDF.", ""
+        return "", "", "", [], "⚠️ Please enter Marathi text or upload a PDF.", ""
 
     t0 = time.time()
     engine, tokenizer, ip, model_type, model_label = get_model()
@@ -194,15 +320,19 @@ def translate(marathi_text: str, pdf_file):
         final_text  = "\n\n".join(results)
         word_count  = len(final_text.split())
         status_msg  = f"✅ Done in {elapsed:.1f}s · {word_count} words · {model_label} · {curr_device.upper()}"
-        return final_text, status_msg, marathi_text
 
+        # Run NLP & ISL Grammar Analysis
+        isl_text, isl_badges, nlp_table = process_isl_nlp(final_text)
+
+        return final_text, isl_text, isl_badges, nlp_table, status_msg, marathi_text
 
     except Exception as e:
-        return "", f"❌ Error: {str(e)}", ""
+        return "", "", "", [], f"❌ Error: {str(e)}", ""
 
 
 def clear_all():
-    return "", None, "", ""
+    return "", None, "", "", "", [], ""
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -339,6 +469,40 @@ label span, .label-wrap span {
                font-size: 0.8rem !important; padding: 5px 14px !important; }
 .sample-btn:hover { border-color: var(--accent) !important; color: var(--accent2) !important; }
 
+/* ISL Badges & Chain */
+.isl-chain-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    background: var(--input);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+.isl-badge {
+    background: linear-gradient(135deg, rgba(88,101,242,0.22), rgba(121,131,245,0.15));
+    border: 1px solid rgba(88,101,242,0.5);
+    color: #a5b4fc;
+    font-weight: 700;
+    font-size: 0.95rem;
+    padding: 6px 14px;
+    border-radius: 6px;
+    letter-spacing: 0.04em;
+    display: inline-flex;
+    align-items: center;
+    box-shadow: 0 2px 8px rgba(88,101,242,0.15);
+}
+
+/* Dataframe styling */
+.dataframe {
+    background: var(--input) !important;
+    color: var(--text) !important;
+    font-size: 0.88rem !important;
+    border-radius: 8px !important;
+}
+
 /* Footer */
 .footer {
     text-align: center; font-size: 0.74rem; color: var(--muted);
@@ -360,34 +524,34 @@ SAMPLES = [
     "छत्रपती शिवाजी महाराजांनी स्वराज्याची स्थापना केली.",
 ]
 
-with gr.Blocks(title="Marathi → English Translator") as demo:
+with gr.Blocks(title="Marathi → English & ISL Translator") as demo:
 
     # Navigation Bar
     gr.HTML("""
     <div class="nav-bar">
         <div class="nav-left">
             <div class="nav-icon">🇮🇳</div>
-            <span class="nav-title">भाषांतर &nbsp;·&nbsp; Translator</span>
+            <span class="nav-title">भाषांतर &nbsp;·&nbsp; Marathi → English &amp; ISL Parser</span>
         </div>
-        <span class="nav-badge">● AI Powered · Free · Fast</span>
+        <span class="nav-badge">● NLP Enabled · Lemmatization · POS Tagging</span>
     </div>
     """)
 
     # Page Title
     gr.HTML("""
     <div class="page-head">
-        <h1>Marathi → English</h1>
-        <p>AI-powered translation · IndicTrans2 · CTranslate2 INT8 · Free forever</p>
+        <h1>Marathi → English &amp; Indian Sign Language (ISL)</h1>
+        <p>AI Translation · Tokenization · Lemmatization · POS Tagging · SVO → SOV Grammar</p>
     </div>
     """)
 
     # Stats Row
     gr.HTML("""
     <div class="stats-row">
-        <div class="stat"><span class="stat-v">⚡</span><span class="stat-l">Fast on GPU</span></div>
-        <div class="stat"><span class="stat-v">📄</span><span class="stat-l">PDF Support</span></div>
-        <div class="stat"><span class="stat-v">★★★</span><span class="stat-l">High Quality</span></div>
-        <div class="stat"><span class="stat-v">∞</span><span class="stat-l">No Limits</span></div>
+        <div class="stat"><span class="stat-v">⚡</span><span class="stat-l">AI Translation</span></div>
+        <div class="stat"><span class="stat-v">🏷️</span><span class="stat-l">POS Tagging</span></div>
+        <div class="stat"><span class="stat-v">🌱</span><span class="stat-l">Lemmatization</span></div>
+        <div class="stat"><span class="stat-v">🤟</span><span class="stat-l">ISL Grammar (SOV)</span></div>
     </div>
     """)
 
@@ -397,7 +561,7 @@ with gr.Blocks(title="Marathi → English Translator") as demo:
         # ── LEFT COLUMN ──────────────────────────────────────────────────────
         with gr.Column(scale=1):
 
-            with gr.Tab("✍️  Type / Paste"):
+            with gr.Tab("✍️  Type / Paste Marathi"):
                 marathi_input = gr.Textbox(
                     label="Input — Marathi Text",
                     placeholder="मराठी मजकूर येथे लिहा किंवा पेस्ट करा…\n\nType or paste Marathi text here…",
@@ -417,22 +581,49 @@ with gr.Blocks(title="Marathi → English Translator") as demo:
                     file_types=[".pdf"],
                     elem_classes=["upload-btn"],
                 )
-                gr.HTML('<p style="font-size:0.78rem;color:#555870;margin:6px 0">PDF text will be extracted and translated automatically.</p>')
+                gr.HTML('<p style="font-size:0.78rem;color:#555870;margin:6px 0">PDF text will be extracted, translated, and parsed automatically.</p>')
 
             with gr.Row():
-                translate_btn = gr.Button("Translate →", variant="primary", size="lg")
+                translate_btn = gr.Button("Translate & Parse ISL →", variant="primary", size="lg")
                 clear_btn     = gr.Button("Clear", size="lg")
 
         # ── RIGHT COLUMN ─────────────────────────────────────────────────────
         with gr.Column(scale=1):
-            english_output = gr.Textbox(
-                label="Translation — English",
-                placeholder="Translation will appear here…",
-                lines=14,
-                max_lines=40,
-                interactive=False,
-                elem_classes=["output-area"],
-            )
+
+            with gr.Tab("📖  1. English Translation"):
+                english_output = gr.Textbox(
+                    label="English Translation (SVO)",
+                    placeholder="English translation will appear here…",
+                    lines=12,
+                    max_lines=30,
+                    interactive=False,
+                    elem_classes=["output-area"],
+                )
+
+            with gr.Tab("🤟  2. ISL Sign Sequence (SOV Grammar)"):
+                isl_badges_output = gr.HTML("""
+                <div style="color:#8b8fa8;padding:12px;background:var(--input);border-radius:8px;border:1px solid var(--border);">
+                    ISL Sign Sequence will appear here after translation...
+                </div>
+                """)
+                isl_text_output = gr.Textbox(
+                    label="ISL Root Keywords (SOV Order)",
+                    placeholder="ISL keywords (e.g. ME SCHOOL GO)...",
+                    lines=4,
+                    interactive=False,
+                )
+
+            with gr.Tab("🏷️  3. NLP Analysis (Tokens, Lemma & POS Tags)"):
+                nlp_table_output = gr.Dataframe(
+                    headers=["Original Token", "Root Lemma", "POS Tag", "Grammar Role", "ISL Action"],
+                    datatype=["str", "str", "str", "str", "str"],
+                    row_count=(5, "dynamic"),
+                    column_count=(5, "fixed"),
+                    interactive=False,
+                    elem_classes=["dataframe"],
+                )
+
+
             status_output = gr.Textbox(
                 label="Status",
                 interactive=False,
@@ -443,36 +634,36 @@ with gr.Blocks(title="Marathi → English Translator") as demo:
     # ── Footer ────────────────────────────────────────────────────────────────
     gr.HTML("""
     <div class="footer">
-        भाषांतर · Marathi to English Translator &nbsp;|&nbsp;
-        AI4Bharat IndicTrans2 · CTranslate2 INT8 &nbsp;|&nbsp;
-        🆓 Free · No daily limits
+        भाषांतर · Marathi to English &amp; Indian Sign Language (ISL) &nbsp;|&nbsp;
+        AI4Bharat IndicTrans2 · spaCy NLP · CTranslate2 INT8 &nbsp;|&nbsp;
+        🆓 Free · Open Source · Educational Project
     </div>
     """)
 
     # ── Wire up events ────────────────────────────────────────────────────────
-    pdf_state = gr.State(None)
-
     translate_btn.click(
         fn=translate,
         inputs=[marathi_input, pdf_input],
-        outputs=[english_output, status_output, marathi_input],
+        outputs=[english_output, isl_text_output, isl_badges_output, nlp_table_output, status_output, marathi_input],
     )
 
     clear_btn.click(
         fn=clear_all,
         inputs=[],
-        outputs=[marathi_input, pdf_input, english_output, status_output],
+        outputs=[marathi_input, pdf_input, english_output, isl_text_output, isl_badges_output, nlp_table_output, status_output],
     )
 
 
 if __name__ == "__main__":
-    print("🚀 Pre-loading model to cache...")
+    print("🚀 Pre-loading models to cache...")
     try:
         get_model()
-        print("✅ Model cached successfully!")
+        get_spacy_nlp()
+        print("✅ Models cached successfully!")
     except Exception as e:
         print(f"⚠️ Pre-load warning: {e}")
 
     demo.launch(css=CUSTOM_CSS)
+
 
 
